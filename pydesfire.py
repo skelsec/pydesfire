@@ -578,7 +578,28 @@ class Desfire():
 			self.applications.append(app)
 
 	def security_check(self):
+		#check for UID randomization, by calling getversion 2 times and comparing the UIDs
+		#check for Masterkey settings, need evaluation table for that
+		#check for application key settings, need evaulation table for that
+		#check for unprotected apps/files, need evalua... no, actually we dont
 		return None
+
+
+	def toDict(self):
+		temp = {}
+		temp ['versioninfo'] = self.versioninfo.toDict()
+		temp ['appid'] = self.appid.encode('hex')
+		temp ['masterkeysettings'] = self.masterkeysettings
+		temp ['keycount'] = self.keycount
+		temp ['keytype'] = self.keytype
+		temp ['applications'] = []
+		for app in self.applications:
+			temp ['applications'].append(app.toDict())
+
+		temp ['files'] = []
+		for file in self.files:
+			temp['files'].append(file.toDict())
+		return temp
 
 ENUM_ERROR_AUTHNEEDED = 'AUTHNEEDED'
 
@@ -611,7 +632,7 @@ class DESFireApplication:
 				pass
 
 	def toDict(self):
-		temp = []
+		temp = {}
 		temp['appid'] = self.appid.encode('hex')
 		temp['files'] = []
 		for file in self.files:
@@ -650,7 +671,7 @@ class DESFireFile:
 				pass
 
 	def toDict(self):
-		temp = []
+		temp = {}
 		temp['appid'] = self.appid.encode('hex')
 		temp['fileid'] = self.fileid.encode('hex')
 		if self.fielsettings != ENUM_ERROR_AUTHNEEDED:
@@ -673,6 +694,6 @@ if __name__ == '__main__':
 	reader.connect()
 	card = Desfire(reader)
 	card.GetCardVersion()
-	
+
 	#card.security_check()
 	#card.enumerate()
