@@ -11,6 +11,8 @@ from enum import Enum
 import logging
 import struct
 from readers import PCSCReader
+from cards import SmartCardTypes, SmartCard
+from utils import *
 
 
 _logger = logging.getLogger(__name__)
@@ -152,8 +154,8 @@ class DESFireCardVersion():
 		self.softwareStorageSize=data[12]
 		self.softwareProtocol  = data[13]
 
-		self.UID   = data[14:20]        # The serial card number
-		self.batchNo     = data[20:25]      # The batch number
+		self.UID   = data[14:21]        # The serial card number
+		self.batchNo     = data[21:25]      # The batch number
 		self.cwProd     = data[26]           # The production week (BCD)
 		self.yearProd    = data[27]          # The production year (BCD)
 
@@ -165,7 +167,30 @@ class DESFireCardVersion():
 		temp += "Production:       week %X, year 20%02X\r\n" % (self.cwProd, self.yearProd)
 		temp += "UID no: %s\r\n" % (bytelist2hex(self.UID),)
 		temp += "Batch no: %s\r\n" % (bytelist2hex(self.batchNo),)
-		return temp    
+		return temp
+
+	def toDict(self):
+		temp = {}
+		temp['hardwareVendorId'] = self.hardwareVendorId
+		temp['hardwareType'] = self.hardwareType
+		temp['hardwareSubType'] = self.hardwareSubType
+		temp['hardwareMajVersion'] = self.hardwareMajVersion
+		temp['hardwareMinVersion'] = self.hardwareMinVersion
+		temp['hardwareStorageSize'] = self.hardwareStorageSize
+		temp['hardwareProtocol'] = self.hardwareProtocol
+		temp['softwareVendorId'] = self.softwareVendorId
+		temp['softwareType'] = self.softwareType
+		temp['softwareSubType'] = self.softwareSubType
+		temp['softwareMajVersion'] = self.softwareMajVersion
+		temp['softwareMinVersion'] = self.softwareMinVersion
+		temp['softwareStorageSize'] = self.softwareStorageSize
+		temp['softwareProtocol'] = self.softwareProtocol
+		temp['UID'] = bytelist2hex(self.UID).upper()
+		temp['batchNo'] = bytelist2hex(self.batchNo).upper()
+		temp['cwProd'] = self.cwProd
+		temp['yearProd'] = self.yearProd
+		return temp
+ 
 
 
 # MK = Application Master Key or PICC Master Key
@@ -243,10 +268,10 @@ class DESFireFilePermissions():
 		return (self.ReadAccess << 12) | (self.WriteAccess <<  8) | (self.ReadAndWriteAccess <<  4) | self.ChangeAccess;
 	
 	def unpack(self, data):
-		self.ReadAccess         = ((data >> 12) & 0x0F)
-		self.WriteAccess        = ((data >>  8) & 0x0F)
-		self.ReadAndWriteAccess = ((data >>  4) & 0x0F)
-		self.ChangeAccess       = ((data      ) & 0x0F)
+		self.ReadAccess         = bool((data >> 12) & 0x0F)
+		self.WriteAccess        = bool((data >>  8) & 0x0F)
+		self.ReadAndWriteAccess = bool((data >>  4) & 0x0F)
+		self.ChangeAccess       = bool((data      ) & 0x0F)
 
 	def __repr__(self):
 		temp =  '----- DESFireFilePermissions ---\r\n'
@@ -258,6 +283,14 @@ class DESFireFilePermissions():
 			temp += 'READWRITE|'
 		if self.ReadAndWriteAccess:
 			temp += 'CHANGE|'
+		return temp
+
+	def toDict(self):
+		temp = {}
+		temp['ReadAccess'] = self.ReadAccess
+		temp['WriteAccess'] = self.WriteAccess
+		temp['ReadAndWriteAccess'] = self.ReadAndWriteAccess
+		temp['ChangeAccess'] = self.ChangeAccess
 		return temp
 	
 
@@ -337,16 +370,19 @@ class DESFireFileSettings:
 
 	def toDict(self):
 		temp = {}
-		temp['FileType'] = self.FileType
-		temp['Encryption'] = self.Encryption
+		temp['FileType'] = self.FileType.name
+		temp['Encryption'] = self.Encryption.name
 		temp['Permissions'] = self.Permissions.toDict()
 		temp['LowerLimit'] = self.LowerLimit
 		temp['UpperLimit'] = self.UpperLimit
 		temp['LimitedCreditValue'] = self.LimitedCreditValue
 		temp['LimitedCreditEnabled'] = self.LimitedCreditEnabled
-		temp['RecordSize'] = self.RecordSize
-		temp['MaxNumberRecords'] = self.MaxNumberRecords
-		temp['CurrentNumberRecords'] = self.CurrentNumberRecords
+		if self.FileType == DESFireFileType.MDFT_LINEAR_RECORD_FILE_WITH_BACKUP:
+			temp['RecordSize'] = self.RecordSize
+			temp['MaxNumberRecords'] = self.MaxNumberRecords
+			temp['CurrentNumberRecords'] = self.CurrentNumberRecords
+		elif self.FileType == DESFireFileType.MDFT_STANDARD_DATA_FILE:
+			temp['FileSize'] = self.FileSize
 		return temp
 
 
@@ -391,24 +427,21 @@ class DesfireException(Exception):
 		self.status_code = DESFireStatus(status_code)
 		self.msg = DESFireStatus(status_code).name
 
-class Desfire():
+class Desfire(SmartCard):
 
 	def __init__(self, reader, logger=None):
-
+		SmartCard.__init__(self,SmartCardTypes.DESFIRE, reader.getATR())
+		# boring init stuff
 		self.reader = reader
 		if logger:
 			self.logger = logger
 		else:
 			self.logger = _logger
 
-		self.versioninfo = None
-		self.appid = 0x000000
-		self.masterkeysettings = None
-		self.keycount = None
-		self.keytype = None
+		
 
+		self.versioninfo = None
 		self.applications = []
-		self.files = []
 
 
 		#SessionKey       = NULL;
@@ -465,6 +498,8 @@ class Desfire():
 		cv = DESFireCardVersion()
 		cv.parse(self.communicate(cmd))
 		self.logger.debug(repr(cv)) 
+		return cv
+		
 
 
 	def GetApplicationIDs(self):
@@ -472,24 +507,17 @@ class Desfire():
 		appids = []
 		cmd = self.wrap_command(DESFireCommand.DF_INS_GET_APPLICATION_IDS.value)
 		raw_data = self.communicate(cmd)
-		return self.parse_application_list(raw_data)
 
-
-	def parse_application_list(self, resp):
-		"""Handle response for command 0x6a list applications.
-		DESFire application ids are 24-bit integers.
-		:param resp: DESFire response as byte array
-		:return: List of parsed application ids
-		"""
 		pointer = 0
 		apps = []
-		while pointer < len(resp):
-			app_id = (resp[pointer] << 16) + (resp[pointer+1] << 8) + resp[pointer+2]
+		while pointer < len(raw_data):
+			app_id = (raw_data[pointer] << 16) + (raw_data[pointer+1] << 8) + raw_data[pointer+2]
 			self.logger.debug("Reading %d %08x", pointer, app_id)
 			apps.append(app_id)
 			pointer += 3
 
 		return apps
+		
 
 	def select_application(self, app_id):
 		"""Choose application on a card on which all the following file commands will apply.
@@ -547,14 +575,14 @@ class Desfire():
 		file_settings.parse(raw_data)
 		return file_settings
 
-	def ReadFileData(self,file_id):
+	def ReadFileData(self,fileid):
 		self.logger.debug('Reading file data for file %s' % (fileid,))
 
-		parameters = [file_id, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+		parameters = [fileid, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
 		cmd = self.wrap_command(0xbd, parameters)
 
 		buffer = self.communicate(cmd)
-		print buffer
+		self.logger.debug('File %s Data: ' % (fileid,bytelist2hex(buffer)))
 
 		return buffer
 
@@ -566,39 +594,55 @@ class Desfire():
 	def enumerate(self):
 		self.versioninfo = self.GetCardVersion()
 		### this is for the ROOT dir (main app)
-		app = DESFireApplication(0x000000)  
-		app.enumerate(self)
-		self.masterkeysettings, self.keycount, self.keytype = app.keysettings
-		self.files = app.files
+		appids = [0x000000]
 
+		appids += self.GetApplicationIDs()
 		### actual apps now
-		for appid in self.GetApplicationIDs():
-			app = DESFireApplication()
-			app.enumerate(appid)
+		for appid in appids:
+			app = DESFireApplication(appid)
+			app.enumerate(self)
 			self.applications.append(app)
 
 	def security_check(self):
 		#check for UID randomization, by calling getversion 2 times and comparing the UIDs
+		ver_n = self.GetCardVersion()
+		ver_n_1 = self.GetCardVersion()
+		if ver_n.UID == ver_n_1.UID:
+			print '[!] Random UID not enabled!'
 		#check for Masterkey settings, need evaluation table for that
+		MF = DESFireApplication(0x000000)
+		MF.enumerate(self)
+
+		if MF.keytype == DESFireKeyType.DF_KEY_INVALID:
+			print '[!]Master KEY type unknown. This is strange'
+		elif MF.keytype == DESFireKeyType.DF_KEY_2K3DES:
+			print '[!]Master KEY encryption type FAIL'
+		elif MF.keytype == DESFireKeyType.DF_KEY_3K3DES or MF.keytype == DESFireKeyType.DF_KEY_AES:
+			print '[+]Master KEY type OK'
+
+		if MF.keycount != 1:
+			print 'Strange'
+		
+		if DESFireKeySettings.KS_ALLOW_CHANGE_MK in MF.keysettings:
+			print 'Warning, key can be changed later (but only by supplying the original key)'
+		if DESFireKeySettings.KS_LISTING_WITHOUT_MK in MF.keysettings:
+			print 'Warning, enumeration of the card is possible without authentication'
+		if DESFireKeySettings.KS_CREATE_DELETE_WITHOUT_MK in MF.keysettings:
+			print 'Warning, apps can be created without authentication'
+		if DESFireKeySettings.KS_CONFIGURATION_CHANGEABLE in MF.keysettings:
+			print 'Warning, key config can be changed (but only by supplying the original key)'
+
 		#check for application key settings, need evaulation table for that
 		#check for unprotected apps/files, need evalua... no, actually we dont
 		return None
 
 
 	def toDict(self):
-		temp = {}
+		temp = SmartCard.toDict(self)
 		temp ['versioninfo'] = self.versioninfo.toDict()
-		temp ['appid'] = self.appid.encode('hex')
-		temp ['masterkeysettings'] = self.masterkeysettings
-		temp ['keycount'] = self.keycount
-		temp ['keytype'] = self.keytype
 		temp ['applications'] = []
 		for app in self.applications:
 			temp ['applications'].append(app.toDict())
-
-		temp ['files'] = []
-		for file in self.files:
-			temp['files'].append(file.toDict())
 		return temp
 
 ENUM_ERROR_AUTHNEEDED = 'AUTHNEEDED'
@@ -618,29 +662,35 @@ class DESFireApplication:
 			self.keysettings, self.keycount, self.keytype = card.GetKeySettings()
 		except DesfireException as e:
 			if e.status_code == DESFireStatus.ST_AuthentError:
-				self.keysettings, self.keycount, self.keytype = (ENUM_ERROR_AUTHNEEDED,ENUM_ERROR_AUTHNEEDED,ENUM_ERROR_AUTHNEEDED)
 				pass
 
 		try:
 			for fileid in card.GetFileIDs():
-				file = DESFireFile(self.appid, fileid)
-				file.enumerate(self)
-				self.files.append(file)
+				try:
+					file = DESFireFile(self.appid, fileid)
+					file.enumerate(card)
+					self.files.append(file)
+				except DesfireException as e:
+					if e.status_code == DESFireStatus.ST_AuthentError:
+						self.files.append(DESFireFile(self.appid, fileid))
+						pass
+		
 		except DesfireException as e:
 			if e.status_code == DESFireStatus.ST_AuthentError:
-				self.files.append(DESFireFile(self.appid, fileid))
+				self.files = None
 				pass
 
 	def toDict(self):
 		temp = {}
-		temp['appid'] = self.appid.encode('hex')
-		temp['files'] = []
-		for file in self.files:
-			temp['files'] = file.toDict()
-		temp['keysettings'] = []
-		if self.keysettings != ENUM_ERROR_AUTHNEEDED:
+		temp['appid'] = hex(self.appid)[2:].rjust(2, '0').upper()
+		if self.files:
+			temp['files'] = []
+			for file in self.files:
+				temp['files'] = file.toDict()
+		if self.keysettings:
+			temp['keysettings'] = []
 			for keysetting in self.keysettings:
-				temp['keysettings'] = keysetting.name 
+				temp['keysettings'].append(keysetting.name)
 			temp['keycount'] = self.keycount
 			temp['keytype'] = self.keytype.name
 		return temp
@@ -659,7 +709,6 @@ class DESFireFile:
 				self.fielsettings = card.GetFileSettings(fileid)		
 		except DesfireException as e:
 			if e.status_code == DESFireStatus.ST_AuthentError:
-				self.fielsettings = ENUM_ERROR_AUTHNEEDED
 				pass
 
 		try:
@@ -667,24 +716,23 @@ class DESFireFile:
 				self.filedata = card.ReadFileData(fileid)		
 		except DesfireException as e:
 			if e.status_code == DESFireStatus.ST_AuthentError:
-				self.filedata = ENUM_ERROR_AUTHNEEDED
 				pass
 
 	def toDict(self):
 		temp = {}
-		temp['appid'] = self.appid.encode('hex')
-		temp['fileid'] = self.fileid.encode('hex')
-		if self.fielsettings != ENUM_ERROR_AUTHNEEDED:
+		temp['appid'] = hex(self.appid)[2:].rjust(2, '0').upper()
+		temp['fileid'] = hex(self.fileid)[2:].rjust(2, '0').upper()
+		if self.fielsettings:
 			temp['fielsettings'] = self.fielsettings.toDict()
+		if self.filedata:
 			temp['filedata'] = self.filedata.encode('hex')
 		return temp
 
-
-def bytelist2hex(data):
-	return ''.join('{:02x}'.format(x) for x in data)
-
 if __name__ == '__main__':
 	import sys
+	import json
+	import pprint 
+
 	global logger
 
 	logging.basicConfig(level=logging.DEBUG)
@@ -695,5 +743,9 @@ if __name__ == '__main__':
 	card = Desfire(reader)
 	card.GetCardVersion()
 
-	#card.security_check()
+	card.security_check()
 	#card.enumerate()
+
+	#pp = pprint.PrettyPrinter(indent=4)
+	#pp.pprint(card.toDict())
+	#print json.dumps(card.toDict(), indent = 4, sort_keys = True)
