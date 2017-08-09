@@ -14,6 +14,9 @@ from readers import PCSCReader
 from cards import SmartCardTypes, SmartCard
 from utils import *
 
+from Crypto.Cipher import DES, AES
+from Crypto import Random
+
 
 _logger = logging.getLogger(__name__)
 
@@ -226,6 +229,14 @@ class DESFireKeySettings(Enum):
 	KS_FACTORY_DEFAULT                = 0x0F
 
 def calc_key_settings(mask):
+	if type(mask) is list:
+		#not parsing, but calculating
+		res = 0
+		for keysetting in mask:
+			res += keysetting.value
+		return res & 0xFF
+
+
 	a=2147483648L
 	result = []
 	while a>>1:
@@ -469,13 +480,13 @@ class Desfire(SmartCard):
 
 
 
-	def communicate(self, apdu):
+	def communicate(self, apdu, autorecieve = True):
 		result = []
 
 		while True:
-			self.logger.debug("[+] Sending APDU: %s" % (bytelist2hex(apdu),))
+			self.logger.debug("[+] Sending APDU: %s" % (bytelist2hex(apdu, separator = ' '),))
 			response, sw1, status = self.reader.sendAPDU(apdu)
-			self.logger.debug("[+] Card response: %s SW1: %x SW2: %x" % (bytelist2hex(response), sw1, status))
+			self.logger.debug("[+] Card response: %s SW1: %x SW2: %x" % (bytelist2hex(response, separator = ' '), sw1, status))
 			if sw1 != 0x91:
 				raise DesfireException(status)
 			if status not in [DESFireStatus.ST_Success.value, DESFireStatus.ST_NoChanges.value, DESFireStatus.ST_MoreFrames.value]:
@@ -484,7 +495,7 @@ class Desfire(SmartCard):
 
 			result += response
 
-			if status != DESFireStatus.ST_MoreFrames.value:
+			if status != DESFireStatus.ST_MoreFrames.value or not autorecieve:
 				break
 			else:
 				apdu = self.wrap_command(DESFireCommand.DF_INS_ADDITIONAL_FRAME.value)
@@ -586,9 +597,27 @@ class Desfire(SmartCard):
 
 		return buffer
 
-	def Authenticate(self, key_id, key):
-		raise Exception('Not yet implemented :(')
-		#self.logger.debug('Authenticating')
+	def FormatCard(self):
+		self.logger.debug('Formatting card')
+		cmd = self.wrap_command(DESFireCommand.DF_INS_FORMAT_PICC.value)
+		raw_data = self.communicate(cmd)
+
+	def CreateApplication(self, appid, keysettings, keycount, type):
+		self.logger.debug('Creating application with appid: %x, ')
+		#keysettings is a list of DESFireKeySettings
+		#type is of type DESFireKeyType
+
+		appid = [
+			(appid >> 16) & 0xff,
+			(appid >> 8) & 0xff,
+			(appid >> 0) & 0xff,
+		]
+
+		params = appid + [calc_key_settings(keysettings), keycount|type.value]
+		cmd = self.wrap_command(DESFireCommand.DF_INS_CREATE_APPLICATION.value, params)
+		print cmd
+		raw_data = self.communicate(cmd)
+		#raw_data = self.communicate(cmd)
 
 
 	def enumerate(self):
@@ -645,7 +674,169 @@ class Desfire(SmartCard):
 			temp ['applications'].append(app.toDict())
 		return temp
 
-ENUM_ERROR_AUTHNEEDED = 'AUTHNEEDED'
+	def Authenticate(self, key_id, key):
+		self.logger.debug('Authenticating')
+		cmd = None
+		keyType = key.GetKeyType()
+		if keyType == DESFireKeyType.DF_KEY_AES:
+			cmd = self.wrap_command(DESFireCommand.DFEV1_INS_AUTHENTICATE_AES.value, [key_id]) 
+		elif keyType == DESFireKeyType.DF_KEY_2K3DES or keyType == DESFireKeyType.DF_KEY_3K3DES:
+			cmd = self.wrap_command(DESFireCommand.DFEV1_INS_AUTHENTICATE_ISO.value, [key_id]) 
+		else:
+			raise Exception('Invalid key type!')
+
+
+		raw_data = self.communicate(cmd, autorecieve = False)
+		RndB_enc = raw_data
+		#RndB_enc = hexstr2bytelist('5D 99 4C E0 85 F2 40 89')
+		print 'Random B (enc): ' + bytelist2hex(RndB_enc, separator = ' ')
+		key.CiperInit()
+		RndB = key.Decrypt(bytelist2hex(RndB_enc).decode('hex'))
+		RndB = hex2bytelist(RndB)
+		print 'Random B (dec): ' + bytelist2hex(RndB, separator = ' ')
+		RndB_rot = RotateBlockLeft(RndB)
+		print 'Random B (dec, rot): ' + bytelist2hex(RndB_rot, separator = ' ')
+
+		#RndA = hex2bytelist(Random.get_random_bytes(8))
+		RndA = hexstr2bytelist('84 9B 36 C5 F8 BF 4A 09')
+		print 'Random A: ' + bytelist2hex(RndA, separator = ' ')
+		RndAB = RndA + RndB_rot
+		print 'Random AB: ' + bytelist2hex(RndAB, separator = ' ')
+		RndAB_enc = key.Encrypt(bytelist2hex(RndAB).decode('hex'))
+		RndAB_enc = hex2bytelist(RndAB_enc)
+		print 'Random AB (enc): ' + bytelist2hex(RndAB_enc, separator = ' ')
+
+		print '---------------'
+		cmd = self.wrap_command(DESFireCommand.DF_INS_ADDITIONAL_FRAME.value, RndAB_enc)
+		raw_data = self.communicate(cmd, autorecieve = False)
+		#raw_data = hexstr2bytelist('91 3C 6D ED 84 22 1C 41')
+		RndA_enc = raw_data
+		print 'Random A (enc): ' + bytelist2hex(RndA_enc, separator = ' ')
+		RndA_dec = key.Decrypt(bytelist2hex(RndA_enc).decode('hex'))
+		RndA_dec = hex2bytelist(RndA_dec)
+		print 'Random A (dec): ' + bytelist2hex(RndA_dec, separator = ' ')
+		RndA_dec_rot = RotateBlockRight(RndA_dec)
+		print 'Random A (dec, rot): ' + bytelist2hex(RndA_dec_rot, separator = ' ')
+
+		if RndA == RndA_dec_rot:
+			print 'Authentication succsess!'
+
+		print 'Calculating Session key'
+		sessionKeyBytes  = RndA[:4]
+		sessionKeyBytes += RndB[:4]
+
+		if key.keySize > 8:
+			if keyType == DESFireKeyType.DF_KEY_2K3DES:
+				sessionKeyBytes += RndA[4:8]
+				sessionKeyBytes += RndB[4:8]
+			elif keyType == DESFireKeyType.DF_KEY_3K3DES:
+				sessionKeyBytes += RndA[6:10]
+				sessionKeyBytes += RndB[6:10]
+				sessionKeyBytes += RndA[12:16]
+				sessionKeyBytes += RndB[12:16]
+			elif keyType == DESFireKeyType.DF_KEY_AES:
+				sessionKeyBytes += RndA[12:16]
+				sessionKeyBytes += RndB[12:16]
+
+		###??????????????????????????????????????????????????????
+		###if (pi_Key->GetKeyType() == DF_KEY_AES) mpi_SessionKey = &mi_AesSessionKey;
+		###else                                    mpi_SessionKey = &mi_DesSessionKey;
+	
+		## now we have the session key, so we reinitialize the crypto!!!
+		sessionKeyBytes = bytelist2hex(sessionKeyBytes).decode('hex')
+		sessionKey = DESFireKey(sessionKeyBytes, keyType)
+		sessionKey.CiperInit()
+		sessionKey.GenerateCmacSubkeys()
+
+		print 'Cmac1: ' + sessionKey.Cmac1.encode('hex').upper()
+		print 'Cmac2: ' + sessionKey.Cmac2.encode('hex').upper()
+		print 'sessionKey: ' + sessionKey.keyBytes.encode('hex').upper()
+		return sessionKey
+
+
+		#raise Exception('Not yet implemented :(')
+		
+
+class DESFireKey():
+	def __init__(self, keyBytes, keyType):
+		self.keyType = keyType
+		self.keyBytes = keyBytes
+		self.keySize = len(self.keyBytes)
+		self.keyVersion = None
+
+		self.IV = None
+		self.Cipher = None
+		self.CipherBlocksize = None
+
+		self.Cmac1 = None
+		self.Cmac2 = None
+
+		
+
+	def CiperInit(self):
+		#todo assert on key length!
+		if self.keyType ==DESFireKeyType.DF_KEY_AES:
+			self.IV = [0x00]*8
+		elif self.keyType == DESFireKeyType.DF_KEY_2K3DES:
+			self.CipherBlocksize = 8
+			self.ClearIV()
+			print 'Cipher init DF_KEY_2K3DES'
+			self.Cipher = DES.new(self.keyBytes, DES.MODE_ECB, self.IV)
+			
+		elif keyType == DESFireKeyType.DF_KEY_3K3DES:
+			self.IV = [0x00]*8
+		
+
+	def ClearIV(self):
+		self.IV = '\x00' * self.CipherBlocksize
+
+
+	def GetKeyType(self):
+		return self.keyType
+
+	def Encrypt(self, data):
+		#todo assert on blocksize
+		result = ''
+		for block in chunks(data, self.CipherBlocksize):
+			print 'Block: ' + block.encode('hex')
+			block_xor = int2hex((int(block.encode('hex'),16) ^ int(self.IV.encode('hex'),16)))
+			print 'Block (xor): ' + block_xor.encode('hex')
+			block_xor_enc = self.Cipher.encrypt(block_xor)
+			#print 'Block (dec): ' + block_dec.encode('hex')
+			self.IV = block_xor_enc
+			result+= block_xor_enc
+		return result
+
+	def Decrypt(self, dataEnc):
+		#todo assert on blocksize
+		result = ''
+		for block in chunks(dataEnc, self.CipherBlocksize):
+			#print 'Block: ' + block.encode('hex')
+			block_dec = self.Cipher.decrypt(block)
+			#print 'Block (dec): ' + block_dec.encode('hex')
+			block_dec_xor = int2hex(int(block_dec.encode('hex'),16) ^ int(self.IV.encode('hex'),16))
+			#print 'Block (dec, xor): ' + block_dec_xor.encode('hex')
+			self.IV = block
+			result+= block_dec_xor
+		return result
+
+	def GenerateCmacSubkeys(self):
+
+		R = 0x87
+		if self.CipherBlocksize == 8:
+			R = 0x1B
+
+		data = '\x00'*16
+		self.ClearIV()
+		data = self.Decrypt(data)
+		self.Cmac1 = BitShiftLeft(data, self.CipherBlocksize)
+		if (hex2int(data[0]) & 0x80):
+			self.Cmac1 = self.Cmac1[:-1] + int2hex(hex2int(self.Cmac1[-1]) ^ R)
+
+		self.Cmac2 = BitShiftLeft(self.Cmac1, self.CipherBlocksize)
+		if (hex2int(self.Cmac1[0]) & 0x80):
+			self.Cmac2  = self.Cmac2 [:-1] + int2hex(hex2int(self.Cmac2 [-1]) ^ R)
+
 
 class DESFireApplication:
 	def __init__(self, appid):
@@ -743,9 +934,22 @@ if __name__ == '__main__':
 	card = Desfire(reader)
 	card.GetCardVersion()
 
-	card.security_check()
+	#card.security_check()
 	#card.enumerate()
 
 	#pp = pprint.PrettyPrinter(indent=4)
 	#pp.pprint(card.toDict())
 	#print json.dumps(card.toDict(), indent = 4, sort_keys = True)
+
+	keyBytes = bytelist2hex([0x00] * 8).decode('hex')
+	keyType = DESFireKeyType.DF_KEY_2K3DES
+
+	key = DESFireKey(keyBytes, keyType)
+	
+
+	
+	card.Authenticate(0, key)
+	#card.FormatCard()
+	card.CreateApplication(0xFFA155, [DESFireKeySettings.KS_ALLOW_CHANGE_MK, DESFireKeySettings.KS_LISTING_WITHOUT_MK,
+	 DESFireKeySettings.KS_CREATE_DELETE_WITHOUT_MK,DESFireKeySettings.KS_CONFIGURATION_CHANGEABLE], 1, DESFireKeyType.DF_KEY_2K3DES)
+	print card.GetApplicationIDs()
