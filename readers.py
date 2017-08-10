@@ -1,18 +1,55 @@
+from enum import Enum
 from smartcard.CardType import AnyCardType
 from smartcard.CardRequest import CardRequest
 from smartcard.util import toHexString
+from Queue import Queue
 
+class ReaderType(Enum):
+	DUMMY = 0
+	PCSC = 1
 
 class Reader():
 	def __init__(self):
 		self.reader_name = ''
 		self.reader_type = ''
 
+class DummyReader(Reader):
+	def __init__(self, request_timeout = 1, cardtype = None):
+		Reader.__init__(self)
+		self.reader_type = ReaderType.DUMMY
+		self.request_timeout = request_timeout
+		self.cardrequest = None
+		self.reader_name = 'DUMMY'
+
+		self.responses = Queue()
+		self.requests = None
+
+
+	def connect(self):
+		return 'OK'
+
+	def sendAPDU(self, apdu):
+		if self.requests != None:
+			if not self.requests.empty():
+				assert apdu == self.requests.get(timeout = 1)
+		return self.responses.get()
+
+	def getATR(self):
+		return ('')
+
+	def addResponse(self,data):
+		# data should be in format (responseBytes, SW1, SW2)
+		self.responses.put(data)
+
+	def addExpectedRequest(self, data):
+		if self.requests == None:
+			self.requests = Queue()
+		self.requests.put(data)
 
 class PCSCReader(Reader):
 	def __init__(self, request_timeout = 1, cardtype = None):
 		Reader.__init__(self)
-		self.reader_type = 'PCSC'
+		self.reader_type = ReaderType.PCSC
 		self.request_timeout = request_timeout
 		if cardtype == None:
 			self.cardtype = AnyCardType()

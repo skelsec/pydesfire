@@ -1,3 +1,12 @@
+import zlib
+
+def zb(b):
+	b = b & 0b11111110
+	return b
+
+def CRC32(data):
+	return int2hex(zlib.crc32(data) & 0xffffffff)
+
 def bytelist2hex(data, separator = ''):
 	return separator.join('{:02x}'.format(x) for x in data).upper()
 
@@ -11,6 +20,16 @@ def hexstr2bytelist(data):
 		data = '0'+data
 	data =  data.decode('hex')
 	return [ord(a) for a in data]
+
+def hexstr2hex(data):
+	data = data.strip()
+	data = data.replace(' ','')
+	if len(data)%2 != 0:
+		data = '0'+data
+	return data.decode('hex')
+def hex2hexstr(data, separator = ' '):
+	return separator.join(a.encode('hex').upper() for a in data)
+
 
 def hex2bytelist(data):
 	return hexstr2bytelist(data.encode('hex'))
@@ -29,6 +48,9 @@ def int2hex(i):
 
 def hex2int(h):
 	return int(h.encode('hex'),16)
+
+def int2intlist(i):
+	return
 	
 def RotateBlockLeft(block):
 	return block[1:] + [block[0]]
@@ -44,3 +66,13 @@ def BitShiftLeft(data, blocksize):
 		temp.append(t)
 	temp.append( (data[-1]*2)&0xFF)
 	return intlist2hex(temp)
+
+def XOR(A,B):
+	cs = len(A)
+	if len(B) > cs:
+		cs = len(B)
+	#calculates the XOR of two arbitrary long hexstrs
+	res =  int2hex( (int(A.encode('hex'),16) ^ int(B.encode('hex'),16)))
+	if len(res) < cs:
+		return '\x00'*(cs-len(res)) + res
+	return res

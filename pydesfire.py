@@ -10,11 +10,11 @@
 from enum import Enum
 import logging
 import struct
-from readers import PCSCReader
+from readers import PCSCReader, DummyReader
 from cards import SmartCardTypes, SmartCard
 from utils import *
 
-from Crypto.Cipher import DES, AES
+from Crypto.Cipher import DES, DES3, AES
 from Crypto import Random
 
 
@@ -450,6 +450,10 @@ class Desfire(SmartCard):
 			self.logger = _logger
 
 		
+		self.isAuthenticated = False
+		self.lastAuthKeyNo = None
+		self.sessionKey = None
+		self.lastSelectedApplication = 0x00
 
 		self.versioninfo = None
 		self.applications = []
@@ -480,7 +484,7 @@ class Desfire(SmartCard):
 
 
 
-	def communicate(self, apdu, autorecieve = True):
+	def communicate(self, apdu, autorecieve = True, isEncryptedComm = False):
 		result = []
 
 		while True:
@@ -492,6 +496,12 @@ class Desfire(SmartCard):
 			if status not in [DESFireStatus.ST_Success.value, DESFireStatus.ST_NoChanges.value, DESFireStatus.ST_MoreFrames.value]:
 				raise DesfireException(status)
 
+			if self.isAuthenticated and len(response) > 8 and status == DESFireStatus.ST_Success.value and sw1 == 0x91:
+				#after authentication, there is always an 8 bytes long CMAC coming from the card, to ensure message integrity
+				#todo: verify CMAC
+				RXCMAC = response[-8:]
+				response = response[:-8]
+
 
 			result += response
 
@@ -499,6 +509,12 @@ class Desfire(SmartCard):
 				break
 			else:
 				apdu = self.wrap_command(DESFireCommand.DF_INS_ADDITIONAL_FRAME.value)
+				
+
+		if isEncryptedComm:
+			#todo: decrpyt recieved buffer with session key
+			raise Excpetion('Not yet implemented!')
+			
 
 		return result
 
@@ -530,7 +546,7 @@ class Desfire(SmartCard):
 		return apps
 		
 
-	def select_application(self, app_id):
+	def SelectApplication(self, app_id):
 		"""Choose application on a card on which all the following file commands will apply.
 		:param app_id: 24-bit int
 		:raise: :py:class:`desfire.protocol.DESFireCommunicationError` on any error
@@ -546,6 +562,9 @@ class Desfire(SmartCard):
 
 		cmd = self.wrap_command(DESFireCommand.DF_INS_SELECT_APPLICATION.value, parameters)
 		self.communicate(cmd)
+		#if new application is selected, authentication needs to be carried out again
+		self.isAuthenticated = False
+		self.lastSelectedApplication = app_id
 
 	def GetKeySettings(self):
 		#you must call selectapplication first!
@@ -674,7 +693,7 @@ class Desfire(SmartCard):
 			temp ['applications'].append(app.toDict())
 		return temp
 
-	def Authenticate(self, key_id, key):
+	def Authenticate(self, key_id, key, challenge = None):
 		self.logger.debug('Authenticating')
 		cmd = None
 		keyType = key.GetKeyType()
@@ -689,22 +708,24 @@ class Desfire(SmartCard):
 		raw_data = self.communicate(cmd, autorecieve = False)
 		RndB_enc = raw_data
 		#RndB_enc = hexstr2bytelist('5D 99 4C E0 85 F2 40 89')
-		print 'Random B (enc): ' + bytelist2hex(RndB_enc, separator = ' ')
+		self.logger.debug( 'Random B (enc): ' + bytelist2hex(RndB_enc, separator = ' '))
 		key.CiperInit()
 		RndB = key.Decrypt(bytelist2hex(RndB_enc).decode('hex'))
 		RndB = hex2bytelist(RndB)
-		print 'Random B (dec): ' + bytelist2hex(RndB, separator = ' ')
+		self.logger.debug( 'Random B (dec): ' + bytelist2hex(RndB, separator = ' '))
 		RndB_rot = RotateBlockLeft(RndB)
-		print 'Random B (dec, rot): ' + bytelist2hex(RndB_rot, separator = ' ')
+		self.logger.debug( 'Random B (dec, rot): ' + bytelist2hex(RndB_rot, separator = ' '))
 
-		#RndA = hex2bytelist(Random.get_random_bytes(8))
-		RndA = hexstr2bytelist('84 9B 36 C5 F8 BF 4A 09')
-		print 'Random A: ' + bytelist2hex(RndA, separator = ' ')
+		if challenge != None:
+			RndA = hex2bytelist(challenge)
+		else:
+			RndA = hex2bytelist(Random.get_random_bytes(8))
+		self.logger.debug( 'Random A: ' + bytelist2hex(RndA, separator = ' '))
 		RndAB = RndA + RndB_rot
-		print 'Random AB: ' + bytelist2hex(RndAB, separator = ' ')
+		self.logger.debug( 'Random AB: ' + bytelist2hex(RndAB, separator = ' '))
 		RndAB_enc = key.Encrypt(bytelist2hex(RndAB).decode('hex'))
 		RndAB_enc = hex2bytelist(RndAB_enc)
-		print 'Random AB (enc): ' + bytelist2hex(RndAB_enc, separator = ' ')
+		self.logger.debug( 'Random AB (enc): ' + bytelist2hex(RndAB_enc, separator = ' '))
 
 		print '---------------'
 		cmd = self.wrap_command(DESFireCommand.DF_INS_ADDITIONAL_FRAME.value, RndAB_enc)
@@ -718,8 +739,12 @@ class Desfire(SmartCard):
 		RndA_dec_rot = RotateBlockRight(RndA_dec)
 		print 'Random A (dec, rot): ' + bytelist2hex(RndA_dec_rot, separator = ' ')
 
-		if RndA == RndA_dec_rot:
-			print 'Authentication succsess!'
+		if RndA != RndA_dec_rot:
+			raise Exception('Authentication FAILED!')
+
+		print 'Authentication succsess!'
+		self.isAuthenticated = True
+		self.lastAuthKeyNo = key_id
 
 		print 'Calculating Session key'
 		sessionKeyBytes  = RndA[:4]
@@ -738,6 +763,10 @@ class Desfire(SmartCard):
 				sessionKeyBytes += RndA[12:16]
 				sessionKeyBytes += RndB[12:16]
 
+		if keyType == DESFireKeyType.DF_KEY_2K3DES or keyType == DESFireKeyType.DF_KEY_3K3DES:
+			sessionKeyBytes = [a & 0b11111110 for a in sessionKeyBytes]
+
+
 		###??????????????????????????????????????????????????????
 		###if (pi_Key->GetKeyType() == DF_KEY_AES) mpi_SessionKey = &mi_AesSessionKey;
 		###else                                    mpi_SessionKey = &mi_DesSessionKey;
@@ -751,11 +780,99 @@ class Desfire(SmartCard):
 		print 'Cmac1: ' + sessionKey.Cmac1.encode('hex').upper()
 		print 'Cmac2: ' + sessionKey.Cmac2.encode('hex').upper()
 		print 'sessionKey: ' + sessionKey.keyBytes.encode('hex').upper()
+		self.sessionKey = sessionKey
 		return sessionKey
 
+	def	GetKeyVersion(self, keyNo):
+		self.logger.debug('Getting key version for keyid %x' %(keyNo,))
 
-		#raise Exception('Not yet implemented :(')
+		cmd = self.wrap_command(DESFireCommand.DF_INS_GET_KEY_VERSION.value, [keyNo])
+		raw_data = self.communicate(cmd)
+		self.logger.debug('Got key version 0x%s for keyid %x' %(bytelist2hex(raw_data),keyNo))
+		return raw_data
+
+	def ChangeKeySettings(self, newKeySettings):
+		self.logger.debug('Changing key settings to %s' %('|'.join(a.name for a in newKeySettings),))
+		cmd = self.wrap_command(DESFireCommand.DF_INS_CHANGE_KEY_SETTINGS.value, calc_key_settings(newKeySettings))
+		raw_data = self.communicate(cmd)
+
+	def ChangeKey(self, keyNo, newKey, curKey):
+		self.logger.debug('Changing key')
+		#self.logger.debug('Changing key No: %s from %s to %s' % (keyNo, newKey, curKey))
+		if not self.isAuthenticated:
+			raise Exception('Not authenticated!')
+
+		print 'curKey: ' + curKey.keyBytes.encode('hex')
+		print 'newKey: ' + newKey.keyBytes.encode('hex')
+
+		isSameKey = keyNo == self.lastAuthKeyNo
+		cryptogram = ''
+
+		# The type of key can only be changed for the PICC master key.
+		# Applications must define their key type in CreateApplication().
+		if self.lastSelectedApplication == 0x00:
+			keyNo = keyNo | newKey.keyType.value
 		
+		#The following if() applies only to application keys.
+    	#For the PICC master key b_SameKey is always true because there is only ONE key (#0) at the PICC level.
+		if not isSameKey:
+			keyData_xor = XOR(newKey.keyBytes, curKey.keyBytes)
+			cryptogram += keyData_xor
+		else:
+			cryptogram += newKey.keyBytes
+		 
+		if newKey.keyType == DESFireKeyType.DF_KEY_AES:
+			cryptogram += int2hex(newKey.keyVersion)
+
+		print CRC32(int2hex(DESFireCommand.DF_INS_CHANGE_KEY.value) + int2hex(keyNo)+cryptogram).encode('hex')
+		Crc = self.DESFireCRC32(int2hex(DESFireCommand.DF_INS_CHANGE_KEY.value) + int2hex(keyNo), cryptogram)
+		if not isSameKey:
+			Crc = self.DESFireCRC32(int2hex(DESFireCommand.DF_INS_CHANGE_KEY.value) + int2hex(keyNo), cryptogram)
+
+		self.logger.debug('Crc: ' + Crc.encode('hex'))
+		Crc_rev = Crc[::-1]
+		cryptogram += Crc_rev
+
+		if not isSameKey:
+			CrcNew = CRC32(newKey.keyBytes)
+			cryptogram += CrcNew
+
+		self.logger.debug('Cryptogram      : ' + hex2hexstr(cryptogram))
+		cryptogram_enc = self.sessionKey.PaddedEncrypt(cryptogram)
+		self.logger.debug('Cryptogram (enc): ' + hex2hexstr(cryptogram_enc))
+
+		params = [keyNo] + hex2bytelist(cryptogram_enc)
+		cmd = self.wrap_command(DESFireCommand.DF_INS_CHANGE_KEY.value, params)
+		raw_data = self.communicate(cmd)
+
+		#If we changed the currently active key, then re-auth is needed!
+		if isSameKey:
+			self.isAuthenticated = False
+			self.sessionKey = None
+
+		return
+
+	def DESFireCRC32(self,cmd, params):
+		CRC = 0xFFFFFFFF
+		CRC = self.CalcCrc32(cmd, CRC);
+		CRC = self.CalcCrc32(params, CRC);
+		return int2hex(CRC)
+
+	def CalcCrc32(self, data, initVal):
+		#data = data in hex
+		#initVal = integer (or long)
+		for b in data:
+			initVal = hex2int(XOR(int2hex(initVal), b))
+			for p in range(8):
+				bit = (initVal & 0x01) > 0
+				initVal = initVal >> 1;
+				if bit:
+					initVal = hex2int(XOR(int2hex(initVal), '\xED\xB8\x83\x20'))
+        
+		return initVal
+
+
+
 
 class DESFireKey():
 	def __init__(self, keyBytes, keyType):
@@ -776,15 +893,28 @@ class DESFireKey():
 	def CiperInit(self):
 		#todo assert on key length!
 		if self.keyType ==DESFireKeyType.DF_KEY_AES:
-			self.IV = [0x00]*8
+			#AES is used
+			self.CipherBlocksize = 16
+			self.ClearIV()
+			self.Cipher = AES.new(self.keyBytes, DES.MODE_ECB, self.IV)
+
 		elif self.keyType == DESFireKeyType.DF_KEY_2K3DES:
+			#DES is used
+			if self.keySize == 8:
+				self.CipherBlocksize = 8
+				self.ClearIV()
+				self.Cipher = DES.new(self.keyBytes, DES.MODE_ECB, self.IV)
+			#2DES is used (3DES with 2 keys only)
+			elif self.keySize == 16:
+				self.CipherBlocksize = 8
+				self.ClearIV()
+				self.Cipher = DES3.new(self.keyBytes, DES.MODE_ECB, self.IV)
+			
+		elif self.keyType == DESFireKeyType.DF_KEY_3K3DES:
+			#3DES is used
 			self.CipherBlocksize = 8
 			self.ClearIV()
-			print 'Cipher init DF_KEY_2K3DES'
-			self.Cipher = DES.new(self.keyBytes, DES.MODE_ECB, self.IV)
-			
-		elif keyType == DESFireKeyType.DF_KEY_3K3DES:
-			self.IV = [0x00]*8
+			self.Cipher = DES3.new(self.keyBytes, DES.MODE_ECB, self.IV)
 		
 
 	def ClearIV(self):
@@ -794,13 +924,19 @@ class DESFireKey():
 	def GetKeyType(self):
 		return self.keyType
 
+	def PaddedEncrypt(self, data):
+		#print 'PADDDDD'
+		#print len(data)
+		#print len(data) % self.CipherBlocksize
+		return self.Encrypt(data + '\x00'*(len(data) % self.CipherBlocksize))
+
 	def Encrypt(self, data):
 		#todo assert on blocksize
 		result = ''
 		for block in chunks(data, self.CipherBlocksize):
-			print 'Block: ' + block.encode('hex')
-			block_xor = int2hex((int(block.encode('hex'),16) ^ int(self.IV.encode('hex'),16)))
-			print 'Block (xor): ' + block_xor.encode('hex')
+			#print 'Block: ' + block.encode('hex')
+			block_xor = XOR(block,self.IV)
+			#print 'Block (xor): ' + block_xor.encode('hex')
 			block_xor_enc = self.Cipher.encrypt(block_xor)
 			#print 'Block (dec): ' + block_dec.encode('hex')
 			self.IV = block_xor_enc
@@ -814,7 +950,7 @@ class DESFireKey():
 			#print 'Block: ' + block.encode('hex')
 			block_dec = self.Cipher.decrypt(block)
 			#print 'Block (dec): ' + block_dec.encode('hex')
-			block_dec_xor = int2hex(int(block_dec.encode('hex'),16) ^ int(self.IV.encode('hex'),16))
+			block_dec_xor = XOR(block_dec,self.IV)
 			#print 'Block (dec, xor): ' + block_dec_xor.encode('hex')
 			self.IV = block
 			result+= block_dec_xor
@@ -847,7 +983,7 @@ class DESFireApplication:
 		self.keytype = None
 
 	def enumerate(self, card):
-		card.select_application(self.appid)
+		card.SelectApplication(self.appid)
 		try:
 			#getting the key settings
 			self.keysettings, self.keycount, self.keytype = card.GetKeySettings()
@@ -894,7 +1030,7 @@ class DESFireFile:
 		self.filedata = None
 
 	def enumerate(self, card):
-		card.select_application(self.appid)
+		card.SelectApplication(self.appid)
 		try:
 			for fileid in card.GetFileIDs():
 				self.fielsettings = card.GetFileSettings(fileid)		
@@ -930,9 +1066,10 @@ if __name__ == '__main__':
 	logger = logging.getLogger(__name__)
 
 	reader = PCSCReader()
+	#reader = DummyReader()
 	reader.connect()
 	card = Desfire(reader)
-	card.GetCardVersion()
+	#card.GetCardVersion()
 
 	#card.security_check()
 	#card.enumerate()
@@ -940,16 +1077,37 @@ if __name__ == '__main__':
 	#pp = pprint.PrettyPrinter(indent=4)
 	#pp.pprint(card.toDict())
 	#print json.dumps(card.toDict(), indent = 4, sort_keys = True)
+	newKeySettings = [DESFireKeySettings.KS_ALLOW_CHANGE_MK, DESFireKeySettings.KS_LISTING_WITHOUT_MK,
+		DESFireKeySettings.KS_CREATE_DELETE_WITHOUT_MK,DESFireKeySettings.KS_CONFIGURATION_CHANGEABLE]
 
-	keyBytes = bytelist2hex([0x00] * 8).decode('hex')
-	keyType = DESFireKeyType.DF_KEY_2K3DES
+	#keyBytes = bytelist2hex([0x00] * 8).decode('hex')
+	#keyType = DESFireKeyType.DF_KEY_2K3DES
 
-	key = DESFireKey(keyBytes, keyType)
+	#key = DESFireKey(keyBytes, keyType)
+	
+	#ORIGINAL!::::#
+	key = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_2K3DES)
+	#key = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_3K3DES)
 	
 
-	
-	card.Authenticate(0, key)
-	#card.FormatCard()
-	card.CreateApplication(0xFFA155, [DESFireKeySettings.KS_ALLOW_CHANGE_MK, DESFireKeySettings.KS_LISTING_WITHOUT_MK,
-	 DESFireKeySettings.KS_CREATE_DELETE_WITHOUT_MK,DESFireKeySettings.KS_CONFIGURATION_CHANGEABLE], 1, DESFireKeyType.DF_KEY_2K3DES)
-	print card.GetApplicationIDs()
+	newKey = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_3K3DES)
+
+	#sessionKey = DESFireKey(hexstr2hex('36 C4 F8 BE 30 6E 6C 76 AC 22 9E 8C F8 24 BA 30 32 50 D4 AA 64 36 56 A2'), DESFireKeyType.DF_KEY_3K3DES)
+	#sessionKey.CiperInit()
+
+	try:
+		card.Authenticate(0, key)
+		#card.FormatCard()
+		#card.CreateApplication(0xFFA155, [DESFireKeySettings.KS_ALLOW_CHANGE_MK, DESFireKeySettings.KS_LISTING_WITHOUT_MK,
+		# DESFireKeySettings.KS_CREATE_DELETE_WITHOUT_MK,DESFireKeySettings.KS_CONFIGURATION_CHANGEABLE], 1, DESFireKeyType.DF_KEY_2K3DES)
+		#card.GetApplicationIDs()
+		#card.enumerate()
+		#card.GetKeyVersion(0)
+		
+		#card.isAuthenticated = True
+		#card.lastAuthKeyNo = 0
+		#card.sessionKey = sessionKey
+		
+		card.ChangeKey(0,newKey,key)
+	except DesfireException as e:
+		print 'Exception: ' + e.msg
