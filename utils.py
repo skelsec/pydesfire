@@ -27,6 +27,7 @@ def hexstr2hex(data):
 	if len(data)%2 != 0:
 		data = '0'+data
 	return data.decode('hex')
+
 def hex2hexstr(data, separator = ' '):
 	return separator.join(a.encode('hex').upper() for a in data)
 

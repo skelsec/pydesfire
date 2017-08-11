@@ -486,9 +486,8 @@ class Desfire(SmartCard):
 
 	def communicate(self, apdu, autorecieve = True, isEncryptedComm = False):
 		result = []
-
 		while True:
-			self.logger.debug("[+] Sending APDU: %s" % (bytelist2hex(apdu, separator = ' '),))
+			self.logger.debug("[+] Sending APDU : %s" % (bytelist2hex(apdu, separator = ' '),))
 			response, sw1, status = self.reader.sendAPDU(apdu)
 			self.logger.debug("[+] Card response: %s SW1: %x SW2: %x" % (bytelist2hex(response, separator = ' '), sw1, status))
 			if sw1 != 0x91:
@@ -573,7 +572,6 @@ class Desfire(SmartCard):
 		cmd = self.wrap_command(DESFireCommand.DF_INS_GET_KEY_SETTINGS.value)
 		raw_data = self.communicate(cmd)
 
-		print bin(raw_data[0])
 		keysettings = calc_key_settings(raw_data[0]) #*pe_Settg = (DESFireKeySettings)u8_RetData[0];
 		keycount =  raw_data[1] & 0x0F#*pu8_KeyCount = u8_RetData[1] & 0x0F;
 		keytype = DESFireKeyType(raw_data[1] & 0xF0) #*pe_KeyType   = (DESFireKeyType)(u8_RetData[1] & 0xF0);
@@ -634,9 +632,20 @@ class Desfire(SmartCard):
 
 		params = appid + [calc_key_settings(keysettings), keycount|type.value]
 		cmd = self.wrap_command(DESFireCommand.DF_INS_CREATE_APPLICATION.value, params)
-		print cmd
 		raw_data = self.communicate(cmd)
 		#raw_data = self.communicate(cmd)
+
+	def DeleteApplication(self, appid):
+		self.logger.debug('Deleting application for AppID 0x%x', (appid))
+
+		appid = [
+			(appid >> 16) & 0xff,
+			(appid >> 8) & 0xff,
+			(appid >> 0) & 0xff,
+		]
+		params = appid
+		cmd = self.wrap_command(DESFireCommand.DF_INS_DELETE_APPLICATION.value, params)
+		raw_data = self.communicate(cmd)
 
 
 	def enumerate(self):
@@ -727,26 +736,25 @@ class Desfire(SmartCard):
 		RndAB_enc = hex2bytelist(RndAB_enc)
 		self.logger.debug( 'Random AB (enc): ' + bytelist2hex(RndAB_enc, separator = ' '))
 
-		print '---------------'
 		cmd = self.wrap_command(DESFireCommand.DF_INS_ADDITIONAL_FRAME.value, RndAB_enc)
 		raw_data = self.communicate(cmd, autorecieve = False)
 		#raw_data = hexstr2bytelist('91 3C 6D ED 84 22 1C 41')
 		RndA_enc = raw_data
-		print 'Random A (enc): ' + bytelist2hex(RndA_enc, separator = ' ')
+		self.logger.debug('Random A (enc): ' + bytelist2hex(RndA_enc, separator = ' '))
 		RndA_dec = key.Decrypt(bytelist2hex(RndA_enc).decode('hex'))
 		RndA_dec = hex2bytelist(RndA_dec)
-		print 'Random A (dec): ' + bytelist2hex(RndA_dec, separator = ' ')
+		self.logger.debug( 'Random A (dec): ' + bytelist2hex(RndA_dec, separator = ' '))
 		RndA_dec_rot = RotateBlockRight(RndA_dec)
-		print 'Random A (dec, rot): ' + bytelist2hex(RndA_dec_rot, separator = ' ')
+		self.logger.debug( 'Random A (dec, rot): ' + bytelist2hex(RndA_dec_rot, separator = ' '))
 
 		if RndA != RndA_dec_rot:
 			raise Exception('Authentication FAILED!')
 
-		print 'Authentication succsess!'
+		self.logger.debug( 'Authentication succsess!')
 		self.isAuthenticated = True
 		self.lastAuthKeyNo = key_id
 
-		print 'Calculating Session key'
+		self.logger.debug( 'Calculating Session key')
 		sessionKeyBytes  = RndA[:4]
 		sessionKeyBytes += RndB[:4]
 
@@ -777,9 +785,9 @@ class Desfire(SmartCard):
 		sessionKey.CiperInit()
 		sessionKey.GenerateCmacSubkeys()
 
-		print 'Cmac1: ' + sessionKey.Cmac1.encode('hex').upper()
-		print 'Cmac2: ' + sessionKey.Cmac2.encode('hex').upper()
-		print 'sessionKey: ' + sessionKey.keyBytes.encode('hex').upper()
+		self.logger.debug( 'Cmac1: ' + sessionKey.Cmac1.encode('hex').upper())
+		self.logger.debug( 'Cmac2: ' + sessionKey.Cmac2.encode('hex').upper())
+		self.logger.debug( 'sessionKey: ' + sessionKey.keyBytes.encode('hex').upper())
 		self.sessionKey = sessionKey
 		return sessionKey
 
@@ -793,19 +801,22 @@ class Desfire(SmartCard):
 
 	def ChangeKeySettings(self, newKeySettings):
 		self.logger.debug('Changing key settings to %s' %('|'.join(a.name for a in newKeySettings),))
-		cmd = self.wrap_command(DESFireCommand.DF_INS_CHANGE_KEY_SETTINGS.value, calc_key_settings(newKeySettings))
+		cmd = self.wrap_command(DESFireCommand.DF_INS_CHANGE_KEY_SETTINGS.value, [calc_key_settings(newKeySettings)])
 		raw_data = self.communicate(cmd)
 
 	def ChangeKey(self, keyNo, newKey, curKey):
-		self.logger.debug('Changing key')
+		self.logger.debug(' -- Changing key --')
 		#self.logger.debug('Changing key No: %s from %s to %s' % (keyNo, newKey, curKey))
 		if not self.isAuthenticated:
 			raise Exception('Not authenticated!')
 
-		print 'curKey: ' + curKey.keyBytes.encode('hex')
-		print 'newKey: ' + newKey.keyBytes.encode('hex')
+		self.logger.debug('Curr IV: ' + hex2hexstr(self.sessionKey.IV))
+		self.logger.debug('curKey : ' + hex2hexstr(curKey.keyBytes))
+		self.logger.debug('newKey : ' + hex2hexstr(newKey.keyBytes))
 
 		isSameKey = keyNo == self.lastAuthKeyNo
+		#self.logger.debug('isSameKey : ' + str(isSameKey))
+		
 		cryptogram = ''
 
 		# The type of key can only be changed for the PICC master key.
@@ -824,18 +835,16 @@ class Desfire(SmartCard):
 		if newKey.keyType == DESFireKeyType.DF_KEY_AES:
 			cryptogram += int2hex(newKey.keyVersion)
 
-		print CRC32(int2hex(DESFireCommand.DF_INS_CHANGE_KEY.value) + int2hex(keyNo)+cryptogram).encode('hex')
+		#self.logger.debug( (int2hex(DESFireCommand.DF_INS_CHANGE_KEY.value) + int2hex(keyNo) + cryptogram).encode('hex'))
 		Crc = self.DESFireCRC32(int2hex(DESFireCommand.DF_INS_CHANGE_KEY.value) + int2hex(keyNo), cryptogram)
-		if not isSameKey:
-			Crc = self.DESFireCRC32(int2hex(DESFireCommand.DF_INS_CHANGE_KEY.value) + int2hex(keyNo), cryptogram)
-
-		self.logger.debug('Crc: ' + Crc.encode('hex'))
+		self.logger.debug('Crc        : ' + hex2hexstr(Crc))
 		Crc_rev = Crc[::-1]
 		cryptogram += Crc_rev
 
 		if not isSameKey:
-			CrcNew = CRC32(newKey.keyBytes)
-			cryptogram += CrcNew
+			CrcNew = self.DESFireCRC32(newKey.keyBytes)
+			self.logger.debug('Crc New Key: ' + hex2hexstr(CrcNew))
+			cryptogram += CrcNew[::-1]
 
 		self.logger.debug('Cryptogram      : ' + hex2hexstr(cryptogram))
 		cryptogram_enc = self.sessionKey.PaddedEncrypt(cryptogram)
@@ -852,22 +861,23 @@ class Desfire(SmartCard):
 
 		return
 
-	def DESFireCRC32(self,cmd, params):
+	def DESFireCRC32(self,cmd, params = None):
 		CRC = 0xFFFFFFFF
 		CRC = self.CalcCrc32(cmd, CRC);
-		CRC = self.CalcCrc32(params, CRC);
+		if params != None:
+			CRC = self.CalcCrc32(params, CRC);
 		return int2hex(CRC)
 
 	def CalcCrc32(self, data, initVal):
 		#data = data in hex
 		#initVal = integer (or long)
-		for b in data:
-			initVal = hex2int(XOR(int2hex(initVal), b))
+		for b in hex2bytelist(data):
+			initVal = (initVal ^ b)
 			for p in range(8):
 				bit = (initVal & 0x01) > 0
-				initVal = initVal >> 1;
+				initVal = (initVal >> 1)
 				if bit:
-					initVal = hex2int(XOR(int2hex(initVal), '\xED\xB8\x83\x20'))
+					initVal = (initVal ^ 0xEDB88320)
         
 		return initVal
 
@@ -892,11 +902,11 @@ class DESFireKey():
 
 	def CiperInit(self):
 		#todo assert on key length!
-		if self.keyType ==DESFireKeyType.DF_KEY_AES:
+		if self.keyType == DESFireKeyType.DF_KEY_AES:
 			#AES is used
 			self.CipherBlocksize = 16
 			self.ClearIV()
-			self.Cipher = AES.new(self.keyBytes, DES.MODE_ECB, self.IV)
+			self.Cipher = AES.new(self.keyBytes, AES.MODE_ECB, self.IV)
 
 		elif self.keyType == DESFireKeyType.DF_KEY_2K3DES:
 			#DES is used
@@ -909,12 +919,18 @@ class DESFireKey():
 				self.CipherBlocksize = 8
 				self.ClearIV()
 				self.Cipher = DES3.new(self.keyBytes, DES.MODE_ECB, self.IV)
+
+			else:
+				raise Exception('Key length error!')
 			
 		elif self.keyType == DESFireKeyType.DF_KEY_3K3DES:
 			#3DES is used
 			self.CipherBlocksize = 8
 			self.ClearIV()
 			self.Cipher = DES3.new(self.keyBytes, DES.MODE_ECB, self.IV)
+
+		else:
+			raise Exception('Unknown key type!')
 		
 
 	def ClearIV(self):
@@ -925,10 +941,15 @@ class DESFireKey():
 		return self.keyType
 
 	def PaddedEncrypt(self, data):
-		#print 'PADDDDD'
-		#print len(data)
-		#print len(data) % self.CipherBlocksize
-		return self.Encrypt(data + '\x00'*(len(data) % self.CipherBlocksize))
+		padsize = 0
+		m = len(data) % self.CipherBlocksize
+		if m != 0:
+			if len(data) < self.CipherBlocksize:
+				padsize = m
+			else:
+				padsize = (((len(data)/self.CipherBlocksize)+1)*self.CipherBlocksize) - len(data)
+		#print (data + '\x00'*(len(data) % self.CipherBlocksize)).encode('hex')
+		return self.Encrypt(data + '\x00'*padsize)
 
 	def Encrypt(self, data):
 		#todo assert on blocksize
@@ -957,7 +978,7 @@ class DESFireKey():
 		return result
 
 	def GenerateCmacSubkeys(self):
-
+		### THIS PART IS NOT WORKING CORRECTLY!!!
 		R = 0x87
 		if self.CipherBlocksize == 8:
 			R = 0x1B
