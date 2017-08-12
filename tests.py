@@ -338,6 +338,81 @@ def ChangeKeyTest_AES3():
 
 	card.ChangeKey(1,newKey,oldKey)
 
+def CMACTest_DES():
+	"""
+	*** GetCardVersion()
+	TX CMAC:  50 20 EC 82 60 86 DF 12
+	Sending:  00 00 FF 04 FC <D4 40 01 60> 8B 00
+	Response: 00 00 FF 0B F5 <D5 41 00 AF 04 01 01 01 00 1A 05> 15 00 AA AA AA AA AA AA AA AA
+	Sending:  00 00 FF 04 FC <D4 40 01 AF> 3C 00
+	Response: 00 00 FF 0B F5 <D5 41 00 AF 04 01 01 01 04 1A 05> 11 00 AA AA AA AA AA AA AA AA
+	Sending:  00 00 FF 04 FC <D4 40 01 AF> 3C 00
+	Response: 00 00 FF 1A E6 <D5 41 00 00 04 06 3F 72 63 34 80 BA 45 19 E3 20 49 13 CD C8 10 BA FA 40 17 59> 98 00
+	RX CMAC:  CD C8 10 BA FA 40 17 59
+	"""
+
+	print 'AuthTest_DES'
+
+	reader = DummyReader()
+	reader.connect()
+	
+	#RndB_enc
+	reader.addResponse((hexstr2bytelist('5D 99 4C E0 85 F2 40 89'), 0x91, 0xAF))
+	reader.addResponse((hexstr2bytelist('91 3C 6D ED 84 22 1C 41'), 0x91, 0x00))
+	reader.addResponse((hexstr2bytelist('04 01 01 01 00 1A 05'), 0x91, 0xAF))
+	reader.addResponse((hexstr2bytelist('04 01 01 01 04 1A 05'), 0x91, 0xAF))
+	reader.addResponse((hexstr2bytelist('04 06 3F 72 63 34 80 BA 45 19 E3 20 49 13 CD C8 10 BA FA 40 17 59'), 0x91, 0x00))
+	card = Desfire(reader)
+
+	key = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_2K3DES)
+	sessionKey = card.Authenticate(0,key, challenge = hexstr2hex('84 9B 36 C5 F8 BF 4A 09'))
+	assert sessionKey.keyBytes == hexstr2hex('84 9A 36 C4 4E D0 B6 58')
+
+	print 'AuthTest_DES Succsess'
+
+	card.GetCardVersion()
+
+def ChangeKeyTest_2DES():
+	"""
+	*** ChangeKey(KeyNo= 1)
+	* SessKey IV:  00 00 00 00 00 00 00 00
+	* New Key:     00 10 20 31 40 50 60 70 80 90 A0 B0 B0 A0 90 80 (2K3DES)
+	* Cur Key:     00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 (DES)
+	* CRC Crypto:  0xD7A73486
+	* CRC New Key: 0xC4EF3A3A
+	* Cryptogram:  00 10 20 31 40 50 60 70 80 90 A0 B0 B0 A0 90 80 86 34 A7 D7 3A 3A EF C4
+	* CryptogrEnc: 4E B6 69 E4 8D CA 58 47 49 54 2E 1B E8 9C B4 C7 84 5A 38 C5 7D 19 DE 59
+	Sending:  00 00 FF 1D E3 <D4 40 01 C4 01 4E B6 69 E4 8D CA 58 47 49 54 2E 1B E8 9C B4 C7 84 5A 38 C5 7D 19 DE 59> 52 00
+	Response: 00 00 FF 0C F4 <D5 41 00 00 2E AD 04 DC F1 21 E0 FE> 3F 00
+	RX CMAC:  2E AD 04 DC F1 21 E0 FE
+	"""
+
+	print 'ChangeKeyTest_2DES'
+
+	reader = DummyReader()
+	reader.connect()
+	reader.addResponse((hexstr2bytelist('00 00 2E AD 04 DC F1 21 E0 FE'), 0x91, 0x00))
+	reader.addExpectedRequest(hexstr2bytelist('90 C4 00 00 19 01 4E B6 69 E4 8D CA 58 47 49 54 2E 1B E8 9C B4 C7 84 5A 38 C5 7D 19 DE 59 00'))
+
+
+
+	card = Desfire(reader)
+
+	key = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_2K3DES)
+	newKey = DESFireKey(hexstr2hex('00 10 20 31 40 50 60 70 80 90 A0 B0 B0 A0 90 80'), DESFireKeyType.DF_KEY_2K3DES)
+
+	sessionKey = DESFireKey(hexstr2hex('CA A6 74 E8 CA E8 52 5E CA A6 74 E8 CA E8 52 5E'), DESFireKeyType.DF_KEY_2K3DES)
+	sessionKey.CiperInit()
+	sessionKey.GenerateCmacSubkeys()
+
+	card.isAuthenticated = True
+	card.lastAuthKeyNo = 0
+	card.sessionKey = sessionKey
+	card.lastSelectedApplication = 0x000000
+
+	card.ChangeKey(1,newKey, key)
+
+
 if __name__ == '__main__':
 	import sys
 	import json
@@ -349,22 +424,26 @@ if __name__ == '__main__':
 	logging.basicConfig(level=logging.DEBUG)
 	logger = logging.getLogger(__name__)
 
-	testCase = 'online'
+	testCase = 'offline'
 
 	if testCase == 'offline':
-
+		
+		ChangeKeyTest_2DES()
+		"""		
 		AuthTest_DES()
 		AuthTest_2DES()
 		AuthTest_3DES()
-		AuthTest_AES()
+		AuthTest_AES()		
 		AuthTest_AES2()
 
+		
 		ChangeKeyTest_2K3DES()
 		ChangeKeyTest_3K3DES()
 		ChangeKeyTest_AES()
 		ChangeKeyTest_AES2()
 		ChangeKeyTest_AES3()
-
+		CMACTest_DES()
+		"""
 	elif testCase == 'online':
 
 		try:
@@ -419,15 +498,19 @@ if __name__ == '__main__':
 			card.ChangeKey(0,key2, key1)
 			card.Authenticate(0,key2)
 			#card.GetKeyVersion(0)
-			key3 = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_2K3DES)
+			key3 = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_2K3DES)
+			
 			logger.debug('ChangeKey(0,key3, key2)')
 			card.ChangeKey(0,key3, key2)
+			
 			logger.debug('Authenticate(0, key3)')
 			card.Authenticate(0, key3)
 			key4 = DESFireKey(hexstr2hex('00 10 20 31 40 50 60 70 80 90 A0 B0 B0 A0 90 80'), DESFireKeyType.DF_KEY_2K3DES)
+			
 			logger.debug('card.ChangeKey(1,key4, key3)')
 			card.ChangeKey(1,key4, key3)
 			key5 = DESFireKey(hexstr2hex('10 18 20 29 30 38 40 48 50 58 60 68 70 78 80 88'), DESFireKeyType.DF_KEY_2K3DES)
+			
 			logger.debug('card.ChangeKey(1,key5, key4)')
 			card.ChangeKey(1,key5, key4)
 			logger.debug('card.Authenticate(1,key5)')
@@ -467,6 +550,7 @@ if __name__ == '__main__':
 			logger.debug('----------------------- AES -----------------------------')
 			card.SelectApplication(0x00AE16)
 			keyC = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_AES)
+			keyC.keyVersion = 0x10
 			card.Authenticate(0,keyC)
 			keyD = DESFireKey(hexstr2hex('00 10 20 30 40 50 60 70 80 90 A0 B0 B0 A0 90 80'), DESFireKeyType.DF_KEY_AES)
 			keyD.keyVersion = 0x10
@@ -478,6 +562,7 @@ if __name__ == '__main__':
 			card.Authenticate(0, keyE)
 			card.GetKeyVersion(0)
 			keyF = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_AES)
+			keyF.keyVersion = 0x10
 			card.ChangeKey(0,keyF,keyE)
 			card.Authenticate(0, keyF)
 			key10 = DESFireKey(hexstr2hex('00 10 20 30 40 50 60 70 80 90 A0 B0 B0 A0 90 80'), DESFireKeyType.DF_KEY_AES)
