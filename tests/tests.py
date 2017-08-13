@@ -1,10 +1,7 @@
-from enum import Enum
 import logging
-import struct
-from readers import DummyReader, PCSCReader
-from pydesfire import Desfire, DESFireKeyType, DESFireKey, DESFireKeySettings, DesfireException
-from cards import SmartCardTypes, SmartCard
-from utils import *
+from pyDESFire.readers import *
+from pyDESFire.pydesfire import *
+from pyDESFire.utils import *
 
 
 
@@ -23,7 +20,7 @@ def AuthTest_DES():
 	sessionKey = card.Authenticate(0,key, challenge = hexstr2hex('84 9B 36 C5 F8 BF 4A 09'))
 	assert sessionKey.keyBytes == hexstr2hex('84 9A 36 C4 4E D0 B6 58')
 
-	print 'AuthTest_DES Succsess'
+	print '[+] AuthTest_DES Succsess'
 
 
 def AuthTest_2DES():
@@ -56,10 +53,9 @@ def AuthTest_2DES():
 
 	key = DESFireKey(hexstr2hex('00 10 20 31 40 50 60 70 80 90 A0 B0 B0 A0 90 80'), DESFireKeyType.DF_KEY_2K3DES)
 	sessionKey = card.Authenticate(0,key, challenge = hexstr2hex('53 0E 3D 90 F7 A2 01 C4'))
-	print sessionKey.keyBytes.encode('hex')
 	assert sessionKey.keyBytes == hexstr2hex('52 0E 3C 90 BC D8 28 96 F6 A2 00 C4 46 32 2C AE')
 
-	print 'AuthTest_2DES Succsess'
+	print '[+] AuthTest_2DES Succsess'
 
 def AuthTest_3DES():
 	print 'AuthTest_3DES'
@@ -90,10 +86,9 @@ def AuthTest_3DES():
 
 	key = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_3K3DES)
 	sessionKey = card.Authenticate(0,key, challenge = hexstr2hex('36 C5 F8 BF 4A 09 AC 23 9E 8D A0 C7 32 51 D4 AB'))
-	print sessionKey.keyBytes.encode('hex')
 	assert sessionKey.keyBytes == hexstr2hex('36 C4 F8 BE 30 6E 6C 76 AC 22 9E 8C F8 24 BA 30 32 50 D4 AA 64 36 56 A2')
 
-	print 'AuthTest_3DES Succsess'
+	print '[+] AuthTest_3DES Succsess'
 def AuthTest_AES():
 	print 'AuthTest_AES'
 	"""
@@ -123,10 +118,9 @@ def AuthTest_AES():
 
 	key = DESFireKey(hexstr2hex('00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'), DESFireKeyType.DF_KEY_AES)
 	sessionKey = card.Authenticate(0,key, challenge = hexstr2hex('F4 4B 26 F5 68 6F 3A 39 1C D3 8E BD 10 77 22 81'))
-	print sessionKey.keyBytes.encode('hex')
 	assert sessionKey.keyBytes == hexstr2hex('F4 4B 26 F5 C0 5D DD 71 10 77 22 81 C4 D0 66 E8')
 
-	print 'AuthTest_AES Succsess'
+	print '[+] AuthTest_AES Succsess'
 
 
 def AuthTest_AES2():
@@ -159,10 +153,9 @@ def AuthTest_AES2():
 
 	key = DESFireKey(hexstr2hex('10 18 20 28 30 38 40 48 50 58 60 68 70 78 80 88'), DESFireKeyType.DF_KEY_AES)
 	sessionKey = card.Authenticate(0,key, challenge = hexstr2hex('40 E7 D2 71 74 CB A6 75 E8 EF BA B9 9C 53 0E 3D'))
-	print sessionKey.keyBytes.encode('hex')
 	assert sessionKey.keyBytes == hexstr2hex('40 E7 D2 71 62 6F FB D4 9C 53 0E 3D 30 4F 5B 17')
 
-	print 'AuthTest_AES2 Succsess'
+	print '[+] AuthTest_AES2 Succsess'
 
 def ChangeKeyTest_DES():
 	return None
@@ -198,7 +191,7 @@ def ChangeKeyTest_2K3DES():
 	card.sessionKey = sessionKey
 
 	card.ChangeKey(0,newKey,oldKey)
-	print 'ChangeKeyTest_2K3DES Succsess'
+	print '[+] ChangeKeyTest_2K3DES Succsess'
 
 def ChangeKeyTest_3K3DES():
 	print 'ChangeKeyTest_3K3DES'
@@ -232,7 +225,7 @@ def ChangeKeyTest_3K3DES():
 	card.lastSelectedApplication = 0x00DE24
 
 	card.ChangeKey(0,newKey,oldKey)
-	print 'ChangeKeyTest_3K3DES Succsess'
+	print '[+] ChangeKeyTest_3K3DES Succsess'
 
 def ChangeKeyTest_AES():
 	print 'ChangeKeyTest_AES'
@@ -266,6 +259,7 @@ def ChangeKeyTest_AES():
 	card.lastSelectedApplication = 0x00AE16
 
 	card.ChangeKey(0,newKey,oldKey)
+	print '[+] ChangeKeyTest_AES Succsess'
 
 def ChangeKeyTest_AES2():
 	print 'ChangeKeyTest_AES2'
@@ -299,6 +293,7 @@ def ChangeKeyTest_AES2():
 	card.lastSelectedApplication = 0x00AE16
 
 	card.ChangeKey(0,newKey,oldKey)
+	print '[+] ChangeKeyTest_AES2 Succsess'
 
 
 def ChangeKeyTest_AES3():
@@ -337,6 +332,7 @@ def ChangeKeyTest_AES3():
 	card.lastSelectedApplication = 0x00AE16
 
 	card.ChangeKey(1,newKey,oldKey)
+	print '[+] ChangeKeyTest_AES3 Succsess'
 
 def CMACTest_DES():
 	"""
@@ -368,9 +364,8 @@ def CMACTest_DES():
 	sessionKey = card.Authenticate(0,key, challenge = hexstr2hex('84 9B 36 C5 F8 BF 4A 09'))
 	assert sessionKey.keyBytes == hexstr2hex('84 9A 36 C4 4E D0 B6 58')
 
-	print 'AuthTest_DES Succsess'
-
 	card.GetCardVersion()
+	print '[+] CMACTest_DES Succsess'
 
 def ChangeKeyTest_2DES():
 	"""
@@ -414,20 +409,13 @@ def ChangeKeyTest_2DES():
 
 
 if __name__ == '__main__':
-	import sys
-	import json
-	import pprint
-	import ctypes
-
-	global logger
-
-	logging.basicConfig(level=logging.DEBUG)
+	logging.basicConfig(level=logging.INFO)
 	logger = logging.getLogger(__name__)
 
 	testCase = 'offline'
 
 	if testCase == 'offline':
-		
+		"""
 		ChangeKeyTest_2DES()
 		"""		
 		AuthTest_DES()
@@ -442,8 +430,9 @@ if __name__ == '__main__':
 		ChangeKeyTest_AES()
 		ChangeKeyTest_AES2()
 		ChangeKeyTest_AES3()
-		CMACTest_DES()
-		"""
+		#CMACTest_DES()
+		print '[+] Offline test finised wihtout errors!'
+		
 	elif testCase == 'online':
 
 		try:

@@ -1,3 +1,4 @@
+import abc
 from enum import Enum
 from smartcard.CardType import AnyCardType
 from smartcard.CardRequest import CardRequest
@@ -12,6 +13,18 @@ class Reader():
 	def __init__(self):
 		self.reader_name = ''
 		self.reader_type = ''
+
+	@abc.abstractmethod
+	def connect(self):
+		raise NotImplementedError
+
+	@abc.abstractmethod
+	def sendAPDU(self, apdu):
+		raise NotImplementedError
+
+	@abc.abstractmethod
+	def getATR(self):
+		raise NotImplementedError
 
 class DummyReader(Reader):
 	def __init__(self, request_timeout = 1, cardtype = None):

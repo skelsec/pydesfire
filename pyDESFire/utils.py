@@ -82,8 +82,6 @@ def RotateBlockRight(block):
 
 def BitShiftLeft(data):
 	data = bin(hex2int(data))[2:]
-	print data
-	print data[1:] + '0'
 	return int2hex(int(data[1:] + '0',2))
 	
 
@@ -96,3 +94,23 @@ def XOR(A,B):
 	if len(res) < cs:
 		return '\x00'*(cs-len(res)) + res
 	return res
+
+def DESFireCRC32(cmd, params = None):
+	CRC = 0xFFFFFFFF
+	CRC = CalcCrc32(cmd, CRC);
+	if params != None:
+		CRC = CalcCrc32(params, CRC);
+	return int2hex(CRC)
+
+def CalcCrc32(data, initVal):
+	#data = data in hex
+	#initVal = integer (or long)
+	for b in hex2bytelist(data):
+		initVal = (initVal ^ b)
+		for p in range(8):
+			bit = (initVal & 0x01) > 0
+			initVal = (initVal >> 1)
+			if bit:
+				initVal = (initVal ^ 0xEDB88320)
+     
+	return initVal
